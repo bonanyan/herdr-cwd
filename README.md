@@ -49,6 +49,12 @@ your shell startup files.
 herdr plugin install bonanyan/herdr-cwd
 ```
 
+Add `--yes` to skip the interactive preview (it lists every command the plugin declares):
+
+```sh
+herdr plugin install bonanyan/herdr-cwd --yes
+```
+
 The `[[startup]]` hook launches the daemon the next time a herdr server starts. To start it right
 away without restarting herdr:
 
@@ -56,12 +62,38 @@ away without restarting herdr:
 herdr plugin action invoke herdr-cwd.start
 ```
 
-Local development, from a clone of this repository:
+Confirm what got registered:
 
 ```sh
-herdr plugin link .
-herdr plugin action invoke herdr-cwd.start
+herdr plugin list --plugin herdr-cwd
+# 1 plugin installed:
+# - herdr-cwd (Herdr CWD) enabled [github:bonanyan/herdr-cwd@<commit>]
+#   config: /Users/you/.config/herdr/plugins/config/herdr-cwd
 ```
+
+### Update
+
+There is no `herdr plugin update` in plugin v1 — reinstalling is the update. It replaces the managed
+checkout with the current default branch, but the running daemon keeps the old code in memory until
+you restart it:
+
+```sh
+herdr plugin install bonanyan/herdr-cwd --yes
+herdr plugin action invoke herdr-cwd.restart
+```
+
+### Where files live
+
+| Path | Contents |
+| --- | --- |
+| `~/.config/herdr/plugins/github/herdr-cwd-<hash>/` | The managed checkout herdr runs (a `plugin link` points at your working copy instead) |
+| `$(herdr plugin config-dir herdr-cwd)` | Your `config.json` |
+| `~/.local/state/herdr/plugins/herdr-cwd/` | Per-socket pidfile, `runtime-<socket-hash>.json`, rotating `herdr-cwd.log` |
+
+Config and state are keyed by plugin id, not by install source, so they survive an update, an
+uninstall/reinstall, and switching between a GitHub install and a local link.
+
+Working on the plugin itself? See [Development](#development) for running it out of a clone.
 
 ## Verify
 
@@ -197,11 +229,62 @@ printed by `doctor`).
 
 ## Development
 
+### Link a working copy
+
+`plugin link` runs the plugin straight out of your clone, so an edit only needs a daemon restart
+instead of a release:
+
 ```sh
-npm test                       # node --test, no dependencies
-node bin/herdr-cwd.js doctor   # run against your live herdr session
-herdr plugin link .            # develop against a real session
+git clone https://github.com/bonanyan/herdr-cwd.git
+cd herdr-cwd
+herdr plugin link .
+herdr plugin action invoke herdr-cwd.start
 ```
+
+`plugin link` does not run `[[build]]` commands — you build the working tree yourself. This plugin
+has no build step and no dependencies.
+
+### Switch between a link and a GitHub install
+
+Stop the daemon first so it releases its pidfile, then swap. `plugin unlink` only unregisters a
+linked plugin and leaves your files alone; `plugin uninstall` also deletes the managed checkout:
+
+```sh
+herdr plugin action invoke herdr-cwd.stop
+herdr plugin unlink herdr-cwd                      # local link     -> unregister only
+herdr plugin install bonanyan/herdr-cwd --yes      # ...            -> GitHub install
+
+herdr plugin action invoke herdr-cwd.stop
+herdr plugin uninstall herdr-cwd                   # GitHub install -> drops the managed checkout
+herdr plugin link ~/path/to/herdr-cwd              # ...            -> local link
+```
+
+Installing over a locally linked plugin is refused, so unlink before installing, and uninstall
+before linking. Start the daemon again after either swap. Config and state are keyed by plugin id,
+so nothing is lost by going back and forth.
+
+### Run the CLI without touching the installed daemon
+
+Point the variables herdr injects at throwaway directories, so a test run cannot grab the live
+pidfile or write into the live log:
+
+```sh
+export HERDR_PLUGIN_ROOT=$PWD \
+       HERDR_PLUGIN_CONFIG_DIR=/tmp/hcwd-cfg \
+       HERDR_PLUGIN_STATE_DIR=/tmp/hcwd-state
+node bin/herdr-cwd.js start && node bin/herdr-cwd.js status && node bin/herdr-cwd.js stop
+```
+
+### Tests and diagnostics
+
+```sh
+npm test                        # node --test, no dependencies
+node bin/herdr-cwd.js doctor    # full report against your live herdr session
+node bin/herdr-cwd.js status --json
+```
+
+To publish a change: push to the default branch, then follow [Update](#update) on every machine —
+reinstall, and restart the daemon so it drops the old code.
 
 ## License
 
