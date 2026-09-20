@@ -1,6 +1,6 @@
 id = "herdr-cwd"
 name = "Herdr CWD"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.0"
 description = "Mirror the focused pane's working directory to the host terminal with OSC 7, so terminal file panels, sidebars, and new splits follow herdr instead of staying where herdr was launched."
 platforms = ["macos", "linux"]

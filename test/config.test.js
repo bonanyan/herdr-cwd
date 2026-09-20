@@ -36,8 +36,10 @@ function withConfigDir(contents, env, fn) {
 test('falls back to defaults when there is no config file', () => {
   withConfigDir(null, {}, (cfg) => {
     assert.equal(cfg.enabled, true);
-    assert.equal(cfg.poll_ms, 500);
-    assert.equal(cfg.idle_poll_ms, 5000);
+    assert.equal(cfg.transport, 'auto');
+    assert.equal(cfg.poll_ms, 100);
+    assert.equal(cfg.idle_poll_ms, 2000);
+    assert.equal(cfg.socket_timeout_ms, 2000);
     assert.equal(cfg.cwd_source, 'auto');
     assert.equal(cfg.log_level, 'info');
     assert.equal(cfg.max_consecutive_errors, 0);
@@ -81,8 +83,16 @@ test('idle polling never gets faster than active polling', () => {
 });
 
 test('clamps out-of-range numbers', () => {
-  withConfigDir({ poll_ms: 1, idle_poll_ms: 999999999 }, {}, (cfg) => {
-    assert.equal(cfg.poll_ms, 100);
+  withConfigDir({ poll_ms: 1, idle_poll_ms: 999999999, socket_timeout_ms: 1 }, {}, (cfg) => {
+    assert.equal(cfg.poll_ms, 20);
     assert.equal(cfg.idle_poll_ms, 600000);
+    assert.equal(cfg.socket_timeout_ms, 100);
   });
+});
+
+test('transport accepts only known values', () => {
+  withConfigDir({ transport: 'carrier-pigeon' }, {}, (cfg) => assert.equal(cfg.transport, 'auto'));
+  withConfigDir({ transport: 'cli' }, {}, (cfg) => assert.equal(cfg.transport, 'cli'));
+  withConfigDir({ transport: 'auto' }, { HERDR_CWD_TRANSPORT: 'socket' }, (cfg) => assert.equal(cfg.transport, 'socket'));
+  withConfigDir(null, { HERDR_CWD_TRANSPORT: 'nonsense' }, (cfg) => assert.equal(cfg.transport, 'auto'));
 });

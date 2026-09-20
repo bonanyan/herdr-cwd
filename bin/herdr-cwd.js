@@ -26,6 +26,7 @@ Commands:
   nudge            One-shot emit plus daemon watchdog (used by herdr event hooks)
   daemon           Run the sync loop in the foreground (used by "start")
   doctor           Full diagnostics report
+  bench            Measure the herdr round-trip over the socket and the CLI
   monitor          Live popup view, refreshed once a second (q to quit)
   open-monitor     Open the monitor as a herdr popup pane
   open-doctor      Open the doctor report as a herdr popup pane
@@ -79,6 +80,12 @@ function renderStatus(cfg, state, daemonState, snapshotInfo, terminals) {
     lines.push(`  recorded cwd       ${show(snapshotInfo.recorded_cwd)}`);
   }
   lines.push(`  terminals          ${terminals.length ? terminals.map((t) => `${t.path}${t.term_program ? ` (${t.term_program})` : ''}`).join(', ') : 'none found'}`);
+  if (snapshotInfo.transport) {
+    lines.push(`  herdr call         ${snapshotInfo.method} via ${snapshotInfo.transport} in ${snapshotInfo.rtt_ms}ms (poll every ${cfg.poll_ms}ms)`);
+  }
+  if (state.rtt_avg_ms !== undefined) {
+    lines.push(`  daemon latency     herdr rtt avg ${state.rtt_avg_ms}ms max ${state.rtt_max_ms}ms | tick->write avg ${state.reaction_avg_ms}ms max ${state.reaction_max_ms}ms`);
+  }
   lines.push(`  polls / writes     ${show(state.polls, 0)} / ${show(state.writes, 0)}`);
   lines.push(`  last write         ${show(state.last_write_at, 'never')}`);
   if (state.last_error) lines.push(`  last error         ${state.last_error}`);
@@ -96,15 +103,18 @@ async function gatherStatus(cfg) {
   const state = runtime.read() || {};
   let snapshotInfo = { pane_id: '', cwd: '', foreground_cwd: '', recorded_cwd: '', error: '' };
   try {
-    const snap = await herdr.snapshot({ timeout: 5000 });
-    const pane = herdr.focusedPane(snap);
+    const info = await herdr.focusedPane(cfg);
+    const pane = info.pane;
     snapshotInfo = {
-      pane_id: pane ? pane.pane_id : (snap && snap.focused_pane_id) || '',
-      cwd: herdr.paneCwd(pane, cfg.cwd_source),
+      pane_id: (pane && pane.pane_id) || '',
+      cwd: herdr.pickCwd(pane, cfg.cwd_source),
       foreground_cwd: (pane && pane.foreground_cwd) || '',
       recorded_cwd: (pane && pane.cwd) || '',
-      workspace_id: (snap && snap.focused_workspace_id) || '',
-      tab_id: (snap && snap.focused_tab_id) || '',
+      workspace_id: (pane && pane.workspace_id) || '',
+      tab_id: (pane && pane.tab_id) || '',
+      method: info.method,
+      transport: info.transport,
+      rtt_ms: +info.rtt_ms.toFixed(2),
     };
   } catch (err) {
     snapshotInfo.error = err.message;
@@ -216,6 +226,26 @@ async function main() {
       }
       if (!flags.quiet) output(flags, 'herdr-cwd: nudged', { ok: true });
       return 0;
+    }
+
+    case 'bench': {
+      const samples = Number(flags.positional[1]) > 0 ? Number(flags.positional[1]) : 12;
+      try {
+        const result = await herdr.bench(cfg, samples);
+        const text = ['herdr-cwd bench (pane.list round trip):']
+          .concat(
+            Object.entries(result).map(([name, entry]) =>
+              entry.samples
+                ? `  ${name.padEnd(8)} median ${entry.median_ms}ms  min ${entry.min_ms}ms  max ${entry.max_ms}ms  n=${entry.samples}`
+                : `  ${name.padEnd(8)} unavailable${entry.error ? ` (${entry.error})` : ''}`,
+            ),
+          )
+          .join('\n');
+        output(flags, text, { ok: true, samples, ...result });
+        return 0;
+      } catch (err) {
+        return fail(flags, err.message);
+      }
     }
 
     case 'doctor': {

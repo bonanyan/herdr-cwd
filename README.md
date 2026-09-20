@@ -86,10 +86,10 @@ alive:
   `bin/watchdog.sh`: an ~8 ms `sh` check of the pidfile that spawns node only when no daemon is
   there. In a session with coding agents these fire constantly, so a dead daemon comes back within
   seconds.
-- **herdr going away does not kill it.** The daemon shells out to `herdr api snapshot` on every
-  poll, so a server restart, an update handoff, or a long detach just produces retries (backing off
-  to 10 s) and it picks up again when herdr is back. Set `max_consecutive_errors` to a positive
-  number if you would rather it exit.
+- **herdr going away does not kill it.** Every poll is a fresh request, so a server restart, an
+  update handoff, or a long detach just produces retries (backing off to 10 s) and it picks up
+  again when herdr is back. Set `max_consecutive_errors` to a positive number if you would rather
+  it exit.
 
 ### Optional: revive it from your shell
 
@@ -184,6 +184,7 @@ node "$HERDR_PLUGIN_ROOT/bin/herdr-cwd.js" status
 | `nudge` | One-shot emit plus daemon watchdog (used by the event hooks) |
 | `daemon` | Run the sync loop in the foreground (what `start` spawns) |
 | `doctor` | Full diagnostics report |
+| `bench` | Measure the herdr round trip over the socket and over the CLI |
 | `monitor` | Live popup view (`q` to quit) |
 | `open-monitor` / `open-doctor` | Open those as herdr popup panes |
 | `config` | Print the effective config; `config --init` writes a template |
@@ -199,10 +200,13 @@ Optional JSON at `$(herdr plugin config-dir herdr-cwd)/config.json`. Create a te
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch |
-| `poll_ms` | `500` | Poll interval while a host terminal is attached |
-| `idle_poll_ms` | `5000` | Poll interval when no host terminal is found, or when herdr calls fail |
-| `tty_refresh_ms` | `5000` | How long the discovered terminal list is cached |
-| `max_consecutive_errors` | `0` | Exit after this many consecutive herdr failures. `0` = never give up: the daemon keeps retrying through server restarts and long detaches, backing off to 10 s |
+| `transport` | `"auto"` | How to talk to herdr: `auto` benchmarks both at startup (and re-checks every 60 s) and uses the faster one, `socket` forces the raw Unix socket, `cli` forces `HERDR_BIN_PATH` |
+| `poll_ms` | `100` | Poll interval while a host terminal is attached |
+| `idle_poll_ms` | `2000` | Poll interval when no host terminal is found, or when herdr calls fail (rising to 10 s after 12 consecutive failures) |
+| `socket_timeout_ms` | `2000` | Per-request socket timeout before the transport is marked unhealthy |
+| `state_flush_ms` | `1000` | Minimum gap between `runtime-*.json` writes when nothing changed |
+| `tty_refresh_ms` | `2000` | How long the discovered terminal list is cached |
+| `max_consecutive_errors` | `0` | Exit after this many consecutive herdr failures. `0` = never give up: the daemon keeps retrying through server restarts and long detaches |
 | `cwd_source` | `"auto"` | `auto` = `foreground_cwd`, falling back to `cwd`; or force either one |
 | `host` | `os.hostname()` | Host part of the `file://` URI |
 | `ttys` | `[]` | Skip discovery and write to exactly these devices |
@@ -213,15 +217,17 @@ Optional JSON at `$(herdr plugin config-dir herdr-cwd)/config.json`. Create a te
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`, or `off` |
 
 Environment overrides (handy for one-off tests): `HERDR_CWD_DISABLED`, `HERDR_CWD_ENABLED`,
-`HERDR_CWD_POLL_MS`, `HERDR_CWD_IDLE_POLL_MS`, `HERDR_CWD_SOURCE`, `HERDR_CWD_HOST`,
-`HERDR_CWD_TTY` (`:` or `,` separated), `HERDR_CWD_TERM_PROGRAMS`, `HERDR_CWD_LOG_LEVEL`.
+`HERDR_CWD_TRANSPORT`, `HERDR_CWD_POLL_MS`, `HERDR_CWD_IDLE_POLL_MS`, `HERDR_CWD_SOCKET_TIMEOUT_MS`,
+`HERDR_CWD_SOURCE`, `HERDR_CWD_HOST`, `HERDR_CWD_TTY` (`:` or `,` separated),
+`HERDR_CWD_TERM_PROGRAMS`, `HERDR_CWD_LOG_LEVEL`.
 
 ## How it works
 
-1. A daemon (spawned detached from the `[[startup]]` hook, revived by the focus event hooks) polls
-   `herdr api snapshot` every `poll_ms`.
-2. It takes the focused pane's `foreground_cwd` (the live cwd of the process controlling that pane's
-   PTY), falling back to `cwd`.
+1. A daemon (spawned detached from the `[[startup]]` hook, revived by the event hooks) asks herdr
+   which pane is focused, every `poll_ms`.
+2. It takes that pane's `foreground_cwd` (the live cwd of the process controlling the pane's PTY),
+   falling back to `cwd`. The focused pane is the one herdr marks `focused: true` in `pane.list` —
+   never the daemon's own caller pane, which is why the daemon can be started from anywhere.
 3. It finds the host terminals: processes whose argv is an *attach* form of `herdr` (`herdr`,
    `herdr --session x`, `herdr session attach x`, `herdr --remote host`), that own a real tty, have
    lived longer than `min_client_age_seconds`, and are not nested inside another herdr pane.
@@ -239,7 +245,37 @@ instead of the ~30 ms a node start would.
 The poll loop covers the case herdr has no event for at all: a plain `cd`.
 
 State lives in `$(herdr plugin config-dir herdr-cwd)`'s sibling state directory: a pidfile per herdr
-socket, a runtime JSON snapshot, and a rotating `herdr-cwd.log`.
+socket, a runtime JSON snapshot, and a rotating `herdr-cwd.log`. The snapshot is rewritten at most
+every `state_flush_ms`, so a fast poll interval does not turn into disk churn.
+
+## Latency
+
+Measured on macOS, herdr 0.9.1, Otty 1.5.0: `cd` in the focused pane, then the moment the host
+terminal reports the pane's new cwd (3 runs, median).
+
+| Stage | 0.2.x | 0.3.0 |
+| --- | --- | --- |
+| herdr knows the new cwd | ~20 ms | ~21 ms |
+| ... plus this plugin, end to end | **~450 ms** | **~75 ms** |
+
+Where the time goes:
+
+- **herdr's own detection, ~20 ms.** `foreground_cwd` is resolved when you ask for it, so an
+  on-demand query is essentially fresh. herdr's *pushed* `pane.updated` events lag that by
+  100-200 ms, which is why the plugin polls rather than waiting for events.
+- **The poll interval: up to `poll_ms`.** At the default 100 ms this averages ~50 ms and dominates
+  everything else. `poll_ms = 50` halves it for one extra herdr call every 50 ms.
+- **Transport.** `transport = "auto"` benchmarks both paths at startup and re-checks every 60 s:
+  - `cli` — spawn `HERDR_BIN_PATH pane list`, ~5 ms per call. The reliable one on macOS today.
+  - `socket` — talk to `HERDR_SOCKET_PATH` directly, ~0.2 ms per call *when it behaves*. On
+    Node 26 + herdr 0.9.1 the same request usually takes ~105 ms: the response sits in the socket
+    buffer until something else wakes libuv's poll, while the identical request from Python or from
+    the `herdr` CLI is answered in ~0.2 ms. `auto` measures this and picks the CLI, so a future
+    combination that fixes it gets used automatically. `bench` prints both numbers.
+- **The write, <1 ms** — one short escape sequence per terminal, only when the directory changed.
+
+`status`, `monitor`, and `doctor` report the live numbers: which transport is in use and why, the
+average and max herdr round trip, and the average and max tick-to-write time.
 
 ## Limitations
 
@@ -263,6 +299,7 @@ socket, a runtime JSON snapshot, and a rotating `herdr-cwd.log`.
 | `terminals: none found` | `doctor` prints the `ps` scan it used. Attach a herdr client, or pin devices with `ttys` in the config. |
 | Right terminal, wrong folder | `doctor` shows `cwd` vs `foreground_cwd` and which one was chosen; try `cwd_source = "cwd"`. |
 | Works, then stops | `log_level = "debug"`, then read `herdr-cwd.log` (path printed by `doctor`). |
+| Reacts slowly | `bench` compares both transports; `status` shows the live round trip and tick-to-write time. Lower `poll_ms`, and see [Latency](#latency). |
 | Daemon exited | `max_consecutive_errors` is `0` (never give up) by default; if you raised it, the next event hook, shell hook, or `start` brings it back. |
 
 ## Uninstall
@@ -328,7 +365,7 @@ node bin/herdr-cwd.js start && node bin/herdr-cwd.js status && node bin/herdr-cw
 ```
 bin/herdr-cwd.js           argv dispatcher: start/stop/restart/status/emit/nudge/daemon/doctor/monitor/config
 bin/watchdog.sh            cheap pidfile check the frequent event hooks run instead of node
-lib/                       config, log, lock (per-socket pidfile), state, osc7, tty discovery, herdr client, daemon, doctor, monitor
+lib/                       config, log, lock (per-socket pidfile), state, osc7, tty discovery, socket + herdr clients, daemon, doctor, monitor
 shell/hook.{zsh,bash,fish} optional prompt-time watchdog for sessions that emit no herdr events
 test/                      node --test suites, including watchdog.sh and the shell hooks
 ```
