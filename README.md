@@ -191,22 +191,6 @@ node "$HERDR_PLUGIN_ROOT/bin/herdr-cwd.js" status
 All of them accept `--json`, and `emit` accepts `--tty <device>` (repeatable) to target one
 terminal instead of scanning.
 
-### Keybindings
-
-```toml
-[[keys.command]]
-key = "prefix+c"
-type = "plugin_action"
-command = "herdr-cwd.emit"
-description = "push cwd to the host terminal now"
-
-[[keys.command]]
-key = "prefix+alt+c"
-type = "plugin_action"
-command = "herdr-cwd.monitor"
-description = "herdr-cwd live monitor"
-```
-
 ## Configuration
 
 Optional JSON at `$(herdr plugin config-dir herdr-cwd)/config.json`. Create a template with
