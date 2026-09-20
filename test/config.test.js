@@ -40,6 +40,8 @@ test('falls back to defaults when there is no config file', () => {
     assert.equal(cfg.idle_poll_ms, 5000);
     assert.equal(cfg.cwd_source, 'auto');
     assert.equal(cfg.log_level, 'info');
+    assert.equal(cfg.max_consecutive_errors, 0);
+    assert.equal(cfg.min_client_age_seconds, 1);
     assert.ok(cfg.host.length > 0);
     assert.deepEqual(cfg.ttys, []);
   });

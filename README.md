@@ -55,13 +55,6 @@ Add `--yes` to skip the interactive preview (it lists every command the plugin d
 herdr plugin install bonanyan/herdr-cwd --yes
 ```
 
-The `[[startup]]` hook launches the daemon the next time a herdr server starts. To start it right
-away without restarting herdr:
-
-```sh
-herdr plugin action invoke herdr-cwd.start
-```
-
 Confirm what got registered:
 
 ```sh
@@ -70,6 +63,70 @@ herdr plugin list --plugin herdr-cwd
 # - herdr-cwd (Herdr CWD) enabled [github:bonanyan/herdr-cwd@<commit>]
 #   config: /Users/you/.config/herdr/plugins/config/herdr-cwd
 ```
+
+### Starting the daemon
+
+Everything the plugin does happens in a small daemon. herdr runs `[[startup]]` hooks **only when its
+server starts** — not when a client attaches, not when the config reloads, and not when a plugin is
+installed or enabled. So right after installing into an already-running server, start it once:
+
+```sh
+herdr plugin action invoke herdr-cwd.start
+```
+
+That is the only manual step, and only in that one situation. From then on the plugin keeps itself
+alive:
+
+- **Server start** — the `[[startup]]` hook starts the daemon.
+- **Focus and pane lifecycle events** (`pane.focused`, `tab.focused`, `workspace.focused`,
+  `pane.moved`, `pane.closed`, `tab.closed`, `workspace.closed`) run `nudge`, which pushes the new
+  directory immediately *and* restarts the daemon if it died.
+- **Everything else that happens in a session** (`pane.created`, `tab.created`, `workspace.created`,
+  `pane.exited`, `pane.agent_detected`, `pane.agent_status_changed`, `workspace.updated`) runs
+  `bin/watchdog.sh`: an ~8 ms `sh` check of the pidfile that spawns node only when no daemon is
+  there. In a session with coding agents these fire constantly, so a dead daemon comes back within
+  seconds.
+- **herdr going away does not kill it.** The daemon shells out to `herdr api snapshot` on every
+  poll, so a server restart, an update handoff, or a long detach just produces retries (backing off
+  to 10 s) and it picks up again when herdr is back. Set `max_consecutive_errors` to a positive
+  number if you would rather it exit.
+
+### Optional: revive it from your shell
+
+herdr has **no client-attach event**, and a plain `cd` emits nothing at all. So in a completely
+quiet session — you attach, no agents are running, you never switch panes, you just `cd` — there is
+no herdr-side signal to hang a restart on. If that is your workflow, source the optional shell
+hook, which checks the pidfile on every prompt and revives the daemon when it is missing:
+
+```zsh
+# ~/.zshrc
+for _f in $HOME/.config/herdr/plugins/github/herdr-cwd-*/shell/hook.zsh(N); do
+  source $_f; break
+done
+```
+
+```bash
+# ~/.bashrc
+for _f in "$HOME"/.config/herdr/plugins/github/herdr-cwd-*/shell/hook.bash; do
+  [ -e "$_f" ] && . "$_f" && break
+done
+```
+
+```fish
+# ~/.config/fish/config.fish
+for f in $HOME/.config/herdr/plugins/github/herdr-cwd-*/shell/hook.fish
+  source $f
+  break
+end
+```
+
+From a clone instead of a GitHub install, source `shell/hook.<shell>` directly — each hook resolves
+the plugin root from its own path.
+
+The check is fork-free in the steady state (the shell reads the pidfile itself and `kill -0` is a
+builtin); node is spawned only when the daemon is genuinely missing. The hook no-ops outside a
+herdr pane. `doctor` reports whether your login shell sources it. zsh and bash hooks are
+syntax-checked and behaviour-tested in CI; the fish hook is best-effort.
 
 ### Update
 
@@ -161,14 +218,14 @@ Optional JSON at `$(herdr plugin config-dir herdr-cwd)/config.json`. Create a te
 | `poll_ms` | `500` | Poll interval while a host terminal is attached |
 | `idle_poll_ms` | `5000` | Poll interval when no host terminal is found, or when herdr calls fail |
 | `tty_refresh_ms` | `5000` | How long the discovered terminal list is cached |
-| `max_consecutive_errors` | `60` | Consecutive herdr failures before the daemon exits (herdr is probably shutting down) |
+| `max_consecutive_errors` | `0` | Exit after this many consecutive herdr failures. `0` = never give up: the daemon keeps retrying through server restarts and long detaches, backing off to 10 s |
 | `cwd_source` | `"auto"` | `auto` = `foreground_cwd`, falling back to `cwd`; or force either one |
 | `host` | `os.hostname()` | Host part of the `file://` URI |
 | `ttys` | `[]` | Skip discovery and write to exactly these devices |
 | `allow_term_programs` | `[]` | Only write to clients whose `TERM_PROGRAM` is in this list (empty = all) |
 | `deny_term_programs` | `[]` | Never write to these `TERM_PROGRAM` values |
 | `skip_nested_clients` | `true` | Ignore herdr clients running inside another herdr pane |
-| `min_client_age_seconds` | `3` | Ignore `herdr` processes younger than this, so short-lived CLI calls are not mistaken for attached clients |
+| `min_client_age_seconds` | `1` | Ignore `herdr` processes younger than this, so short-lived CLI calls are not mistaken for attached clients |
 | `log_level` | `"info"` | `debug`, `info`, `warn`, `error`, or `off` |
 
 Environment overrides (handy for one-off tests): `HERDR_CWD_DISABLED`, `HERDR_CWD_ENABLED`,
@@ -188,9 +245,14 @@ Environment overrides (handy for one-off tests): `HERDR_CWD_DISABLED`, `HERDR_CW
    `ESC ] 7 ; file://<host><percent-encoded-path> ESC \` to each device and remembers what it sent,
    so an unchanged directory is never rewritten.
 
-Event hooks on `pane.focused`, `tab.focused`, `workspace.focused`, `pane.moved`, `pane.closed`,
-`tab.closed`, and `workspace.closed` run `nudge`, which emits immediately and restarts the daemon if
-it died. The poll loop covers the case herdr has no event for: a plain `cd`.
+Event hooks cover the rest. Focus and pane lifecycle events (`pane.focused`, `tab.focused`,
+`workspace.focused`, `pane.moved`, `pane.closed`, `tab.closed`, `workspace.closed`) run `nudge`,
+which emits immediately and restarts the daemon if it died. The busier events (`pane.created`,
+`tab.created`, `workspace.created`, `pane.exited`, `pane.agent_detected`,
+`pane.agent_status_changed`, `workspace.updated`) run `bin/watchdog.sh` instead: a POSIX-sh pidfile
+check that only spawns node when nothing is running, so hooking frequent events costs ~8 ms each
+instead of the ~30 ms a node start would.
+The poll loop covers the case herdr has no event for at all: a plain `cd`.
 
 State lives in `$(herdr plugin config-dir herdr-cwd)`'s sibling state directory: a pidfile per herdr
 socket, a runtime JSON snapshot, and a rotating `herdr-cwd.log`.
@@ -212,10 +274,12 @@ socket, a runtime JSON snapshot, and a rotating `herdr-cwd.log`.
 | Symptom | Check |
 | --- | --- |
 | Nothing happens | `doctor`: is the daemon alive, is `enabled` true, does the socket exist? |
+| Dead right after install | `[[startup]]` only runs when the herdr **server** starts, so run `herdr plugin action invoke herdr-cwd.start` once — see [Starting the daemon](#starting-the-daemon). |
+| Dead in a quiet session | herdr emits nothing for a plain `cd` and has no client-attach event; add the [optional shell hook](#optional-revive-it-from-your-shell). |
 | `terminals: none found` | `doctor` prints the `ps` scan it used. Attach a herdr client, or pin devices with `ttys` in the config. |
 | Right terminal, wrong folder | `doctor` shows `cwd` vs `foreground_cwd` and which one was chosen; try `cwd_source = "cwd"`. |
 | Works, then stops | `log_level = "debug"`, then read `herdr-cwd.log` (path printed by `doctor`). |
-| Daemon keeps exiting | `max_consecutive_errors` — the daemon gives up when herdr stops answering, and the next event hook or `start` brings it back. |
+| Daemon exited | `max_consecutive_errors` is `0` (never give up) by default; if you raised it, the next event hook, shell hook, or `start` brings it back. |
 
 ## Uninstall
 
@@ -273,6 +337,16 @@ export HERDR_PLUGIN_ROOT=$PWD \
        HERDR_PLUGIN_CONFIG_DIR=/tmp/hcwd-cfg \
        HERDR_PLUGIN_STATE_DIR=/tmp/hcwd-state
 node bin/herdr-cwd.js start && node bin/herdr-cwd.js status && node bin/herdr-cwd.js stop
+```
+
+### Layout
+
+```
+bin/herdr-cwd.js           argv dispatcher: start/stop/restart/status/emit/nudge/daemon/doctor/monitor/config
+bin/watchdog.sh            cheap pidfile check the frequent event hooks run instead of node
+lib/                       config, log, lock (per-socket pidfile), state, osc7, tty discovery, herdr client, daemon, doctor, monitor
+shell/hook.{zsh,bash,fish} optional prompt-time watchdog for sessions that emit no herdr events
+test/                      node --test suites, including watchdog.sh and the shell hooks
 ```
 
 ### Tests and diagnostics
