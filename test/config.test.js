@@ -1,0 +1,86 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+function withConfigDir(contents, env, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-cwd-test-'));
+  const previousDir = process.env.HERDR_PLUGIN_CONFIG_DIR;
+  const savedEnv = {};
+  process.env.HERDR_PLUGIN_CONFIG_DIR = dir;
+  for (const [key, value] of Object.entries(env)) {
+    savedEnv[key] = process.env[key];
+    if (value === null) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    if (contents) fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(contents));
+    delete require.cache[require.resolve('../lib/config')];
+    delete require.cache[require.resolve('../lib/paths')];
+    const { loadConfig } = require('../lib/config');
+    return fn(loadConfig(), dir);
+  } finally {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    if (previousDir === undefined) delete process.env.HERDR_PLUGIN_CONFIG_DIR;
+    else process.env.HERDR_PLUGIN_CONFIG_DIR = previousDir;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('falls back to defaults when there is no config file', () => {
+  withConfigDir(null, {}, (cfg) => {
+    assert.equal(cfg.enabled, true);
+    assert.equal(cfg.poll_ms, 500);
+    assert.equal(cfg.idle_poll_ms, 5000);
+    assert.equal(cfg.cwd_source, 'auto');
+    assert.equal(cfg.log_level, 'info');
+    assert.ok(cfg.host.length > 0);
+    assert.deepEqual(cfg.ttys, []);
+  });
+});
+
+test('normalizes values from the config file', () => {
+  withConfigDir(
+    { poll_ms: '1200', cwd_source: 'nonsense', log_level: 'debug', ttys: '/dev/ttys001, /dev/ttys002', allow_term_programs: ['Otty'] },
+    {},
+    (cfg) => {
+      assert.equal(cfg.poll_ms, 1200);
+      assert.equal(cfg.cwd_source, 'auto');
+      assert.equal(cfg.log_level, 'debug');
+      assert.deepEqual(cfg.ttys, ['/dev/ttys001', '/dev/ttys002']);
+      assert.deepEqual(cfg.allow_term_programs, ['otty']);
+    },
+  );
+});
+
+test('environment variables win over the config file', () => {
+  withConfigDir(
+    { poll_ms: 1000 },
+    { HERDR_CWD_POLL_MS: '2500', HERDR_CWD_DISABLED: '1', HERDR_CWD_TTY: '/dev/ttys009', HERDR_CWD_SOURCE: 'cwd' },
+    (cfg) => {
+      assert.equal(cfg.poll_ms, 2500);
+      assert.equal(cfg.enabled, false);
+      assert.deepEqual(cfg.ttys, ['/dev/ttys009']);
+      assert.equal(cfg.cwd_source, 'cwd');
+    },
+  );
+});
+
+test('idle polling never gets faster than active polling', () => {
+  withConfigDir({ poll_ms: 4000, idle_poll_ms: 1000 }, {}, (cfg) => {
+    assert.equal(cfg.idle_poll_ms, 4000);
+  });
+});
+
+test('clamps out-of-range numbers', () => {
+  withConfigDir({ poll_ms: 1, idle_poll_ms: 999999999 }, {}, (cfg) => {
+    assert.equal(cfg.poll_ms, 100);
+    assert.equal(cfg.idle_poll_ms, 600000);
+  });
+});

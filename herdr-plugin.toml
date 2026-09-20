@@ -1,0 +1,102 @@
+id = "herdr-cwd"
+name = "Herdr CWD"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Mirror the focused pane's working directory to the host terminal with OSC 7, so terminal file panels, sidebars, and new splits follow herdr instead of staying where herdr was launched."
+platforms = ["macos", "linux"]
+
+[[startup]]
+command = ["node", "bin/herdr-cwd.js", "start"]
+
+[[events]]
+on = "pane.focused"
+command = ["node", "bin/herdr-cwd.js", "nudge"]
+
+[[events]]
+on = "tab.focused"
+command = ["node", "bin/herdr-cwd.js", "nudge"]
+
+[[events]]
+on = "workspace.focused"
+command = ["node", "bin/herdr-cwd.js", "nudge"]
+
+[[events]]
+on = "pane.moved"
+command = ["node", "bin/herdr-cwd.js", "nudge"]
+
+[[events]]
+on = "pane.closed"
+command = ["node", "bin/herdr-cwd.js", "nudge"]
+
+[[events]]
+on = "tab.closed"
+command = ["node", "bin/herdr-cwd.js", "nudge"]
+
+[[events]]
+on = "workspace.closed"
+command = ["node", "bin/herdr-cwd.js", "nudge"]
+
+[[actions]]
+id = "start"
+title = "Herdr CWD: start"
+description = "Start the daemon that keeps the host terminal's cwd in sync with the focused pane."
+contexts = ["global"]
+command = ["node", "bin/herdr-cwd.js", "start"]
+
+[[actions]]
+id = "stop"
+title = "Herdr CWD: stop"
+description = "Stop the sync daemon."
+contexts = ["global"]
+command = ["node", "bin/herdr-cwd.js", "stop"]
+
+[[actions]]
+id = "restart"
+title = "Herdr CWD: restart"
+description = "Restart the sync daemon, re-reading config."
+contexts = ["global"]
+command = ["node", "bin/herdr-cwd.js", "restart"]
+
+[[actions]]
+id = "status"
+title = "Herdr CWD: status"
+description = "Show daemon state, the focused pane's cwd, and the terminals found."
+contexts = ["global"]
+command = ["node", "bin/herdr-cwd.js", "status"]
+
+[[actions]]
+id = "emit"
+title = "Herdr CWD: emit now"
+description = "Write OSC 7 for the focused pane's cwd to every attached terminal once."
+contexts = ["global"]
+command = ["node", "bin/herdr-cwd.js", "emit"]
+
+[[actions]]
+id = "doctor"
+title = "Herdr CWD: doctor"
+description = "Full diagnostics: herdr, config, daemon, discovered terminals, sample sequence, log tail."
+contexts = ["global"]
+command = ["node", "bin/herdr-cwd.js", "open-doctor"]
+
+[[actions]]
+id = "monitor"
+title = "Herdr CWD: live monitor"
+description = "Open a popup that refreshes the sync state once a second."
+contexts = ["global"]
+command = ["node", "bin/herdr-cwd.js", "open-monitor"]
+
+[[panes]]
+id = "monitor"
+title = "herdr-cwd monitor"
+placement = "popup"
+width = 96
+height = 28
+command = ["node", "bin/herdr-cwd.js", "monitor"]
+
+[[panes]]
+id = "doctor"
+title = "herdr-cwd doctor"
+placement = "popup"
+width = 110
+height = 34
+command = ["node", "bin/herdr-cwd.js", "doctor"]

@@ -1,0 +1,34 @@
+{
+  "name": "herdr-cwd",
+  "version": "0.1.0",
+  "description": "Herdr plugin that mirrors the focused pane's working directory to the host terminal with OSC 7.",
+  "license": "Apache-2.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bonanyan/herdr-cwd.git"
+  },
+  "homepage": "https://github.com/bonanyan/herdr-cwd#readme",
+  "bugs": {
+    "url": "https://github.com/bonanyan/herdr-cwd/issues"
+  },
+  "keywords": [
+    "herdr",
+    "herdr-plugin",
+    "terminal",
+    "osc7",
+    "cwd",
+    "otty"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "herdr-cwd": "bin/herdr-cwd.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "doctor": "node bin/herdr-cwd.js doctor",
+    "status": "node bin/herdr-cwd.js status"
+  }
+}
